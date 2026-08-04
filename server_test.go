@@ -20,7 +20,13 @@ func newTestServer(t *testing.T) *httptest.Server {
 func post(t *testing.T, srv *httptest.Server, body string) (int, executeResponse) {
 	t.Helper()
 
-	res, err := srv.Client().Post(srv.URL+"/execute", "application/json", strings.NewReader(body))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, srv.URL+"/execute", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	res, err := srv.Client().Do(req)
 	if err != nil {
 		t.Fatalf("post /execute: %v", err)
 	}
@@ -87,11 +93,9 @@ func TestExecuteIsSerialized(t *testing.T) {
 	var wg sync.WaitGroup
 	statuses := make([]int, 2)
 	for i := range statuses {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			statuses[i], _ = post(t, srv, `{"command": "sleep 1"}`)
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -193,7 +197,12 @@ func TestHealthz(t *testing.T) {
 	t.Parallel()
 	srv := newTestServer(t)
 
-	res, err := srv.Client().Get(srv.URL + "/healthz")
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/healthz", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+
+	res, err := srv.Client().Do(req)
 	if err != nil {
 		t.Fatalf("get /healthz: %v", err)
 	}

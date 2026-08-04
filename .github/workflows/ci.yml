@@ -1,26 +1,75 @@
-name: CI
+name: ci
 
 on:
   push:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: false # golangci-lint-action manages its own cache
+
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.11.4
+
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
-      - run: go vet ./...
-      - run: go test -race ./...
+          cache: true
+
+      - name: Run tests
+        run: go test -race ./...
 
   image:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/build-push-action@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Build image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
-          push: false
+          load: true
+          tags: sandbox:ci
+
+      # The image is only useful if the contract answers from inside it, so
+      # exercise all three routes against the container we just built.
+      - name: Smoke test the contract
+        run: |
+          docker run -d --name sandbox -p 3000:3000 sandbox:ci
+          for _ in $(seq 1 30); do
+            curl -fsS localhost:3000/healthz >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -fsS localhost:3000/healthz
+
+          curl -fsS -X PUT localhost:3000/files/hello.txt --data-binary 'hi'
+          test "$(curl -fsS localhost:3000/files/hello.txt)" = "hi"
+
+          curl -fsS -X POST localhost:3000/execute \
+            -H 'Content-Type: application/json' \
+            -d '{"command": "cat hello.txt"}' | grep -q '"exitCode":0'
+
+          curl -fsS -X DELETE localhost:3000/files/hello.txt
+
+      - name: Container logs
+        if: always()
+        run: docker logs sandbox

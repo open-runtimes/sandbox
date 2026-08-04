@@ -1,24 +1,26 @@
-# The reference sandbox image: the contract server, a shell to run commands
-# with, and nothing else. Language images layer on top — see the README.
-FROM golang:1.25-alpine AS build
+# The reference sandbox image: the contract server on Alpine, whose busybox
+# userland is the shell /execute runs commands through. Language sandboxes layer
+# the same binary into a runtime image — see the README.
+#
+# Bases are pinned by digest: an image that runs untrusted code should never
+# change underfoot on a rebuild.
+FROM --platform=$BUILDPLATFORM golang:1.25.12-alpine3.24@sha256:56961d79ea8129efddcc0b8643fd8a5416b4e6228cfd477e3fd61deb2672c587 AS build
+ARG TARGETOS TARGETARCH
 WORKDIR /src
 COPY go.mod ./
 COPY *.go ./
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /sandbox . \
-    && mkdir /workspace
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w" -o /sandbox .
 
-FROM gcr.io/distroless/static-debian12:nonroot
-# busybox is static and self-contained, so its /bin — one binary plus applet
-# symlinks — is all /execute needs for a POSIX shell and the usual coreutils.
-COPY --from=busybox:1.37-musl /bin /bin
-COPY --from=build /sandbox /sandbox
-COPY --from=build --chown=nonroot:nonroot /workspace /workspace
+FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+RUN adduser -D -H -u 10001 sandbox && mkdir -p /workspace && chown sandbox /workspace
+COPY --from=build /sandbox /usr/local/bin/sandbox
 
 ENV SANDBOX_WORKSPACE=/workspace \
     SANDBOX_PORT=3000 \
-    SANDBOX_SHELL=/bin/sh \
-    PATH=/bin:/usr/bin
+    SANDBOX_SHELL=/bin/sh
 
 EXPOSE 3000
-USER nonroot
-ENTRYPOINT ["/sandbox"]
+USER sandbox
+WORKDIR /workspace
+ENTRYPOINT ["/usr/local/bin/sandbox"]

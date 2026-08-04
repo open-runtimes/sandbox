@@ -1,0 +1,64 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - canonicalheader
+    - copyloopvar
+    - durationcheck
+    - errorlint
+    - exhaustive
+    - gochecknoglobals
+    - intrange
+    - misspell
+    - modernize
+    - nilerr
+    - noctx
+    - perfsprint
+    - revive
+    - tagliatelle
+    - thelper
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - usetesting
+  settings:
+    exhaustive:
+      default-signifies-exhaustive: true
+    tagliatelle:
+      case:
+        rules:
+          json: camel
+    revive:
+      rules:
+        - name: early-return
+        - name: error-strings
+        - name: errorf
+        - name: exported
+        - name: indent-error-flow
+        - name: unnecessary-if
+        - name: use-any
+        - name: var-naming
+  exclusions:
+    rules:
+      - linters:
+          - unparam
+        path: _test\.go$
+      # Test responses are closed by a t.Cleanup in the request helper, which
+      # bodyclose cannot see through.
+      - linters:
+          - bodyclose
+        path: _test\.go$
+    presets:
+      - comments
+      - common-false-positives
+      - std-error-handling
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

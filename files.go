@@ -14,7 +14,7 @@ import (
 // errBadPath covers every way a request can name something outside the
 // workspace. All of them are 400, never 403: the caller learns nothing about
 // what is out there.
-var errBadPath = errors.New("path must be relative to the workspace and must not contain ..")
+var errBadPath = errors.New("path must be relative to the workspace and must not escape it")
 
 type entry struct {
 	Name  string `json:"name"`

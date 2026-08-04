@@ -77,9 +77,20 @@ subject.
 ## Running it
 
 ```bash
-go run .                                      # local, needs SANDBOX_WORKSPACE set
-docker build -t open-runtimes/sandbox .       # distroless, ~10 MB
-docker run -p 3000:3000 open-runtimes/sandbox
+docker run -p 3000:3000 ghcr.io/open-runtimes/sandbox:latest
+```
+
+The image is Alpine plus the server — busybox is the shell `/execute` runs
+commands through, and it runs as an unprivileged user with `/workspace` as its
+working directory. Base images are pinned by digest.
+
+Locally, either build it or take a binary from a
+[release](https://github.com/open-runtimes/sandbox/releases) (linux and macOS,
+amd64 and arm64):
+
+```bash
+SANDBOX_WORKSPACE=$(mktemp -d) go run .
+docker build -t sandbox .
 ```
 
 ## Language images
@@ -88,15 +99,16 @@ The reference image carries a shell and nothing else. A language sandbox is this
 binary dropped into a runtime image:
 
 ```dockerfile
-FROM open-runtimes/sandbox AS contract
+FROM ghcr.io/open-runtimes/sandbox:latest AS contract
 
 FROM python:3.12-slim
-COPY --from=contract /sandbox /sandbox
+COPY --from=contract /usr/local/bin/sandbox /usr/local/bin/sandbox
 RUN useradd -m sandbox && mkdir /workspace && chown sandbox /workspace
 ENV SANDBOX_WORKSPACE=/workspace SANDBOX_PORT=3000
 USER sandbox
+WORKDIR /workspace
 EXPOSE 3000
-ENTRYPOINT ["/sandbox"]
+ENTRYPOINT ["/usr/local/bin/sandbox"]
 ```
 
 Nothing about the contract is language-specific — the server only ever shells
@@ -105,6 +117,11 @@ out, so whatever is on `PATH` in your image is what `/execute` can run.
 ## Development
 
 ```bash
-go test ./...
+go test -race ./...
 go vet ./...
+golangci-lint run
 ```
+
+CI lints, tests, builds the image, and smoke-tests the contract inside it.
+Pushing a `v*` tag publishes a multi-arch image to
+`ghcr.io/open-runtimes/sandbox` and attaches the binaries to a GitHub release.
