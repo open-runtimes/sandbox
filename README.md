@@ -1,7 +1,8 @@
 # open-runtimes/sandbox
 
-The reference implementation of the **sandbox contract**: exec and whole-file
-access over HTTP, scoped to one workspace directory.
+The reference implementation of the **sandbox contract**: exec, background
+processes, terminals and whole-file access over HTTP, scoped to one workspace
+directory.
 
 A [sandbox](https://github.com/open-runtimes/orchestrator/blob/main/docs/sandboxes.md)
 is a live, isolated workspace you drive from the outside — create one, run
@@ -10,7 +11,7 @@ creates, routes, and reaps sandboxes; it does not sit in the middle of your
 commands. Exec and files are served by the sandbox *image*, at the sandbox's own
 URL. That is what this server is.
 
-Any image answering these three routes on the pool's port is a valid sandbox
+Any image answering these routes on the pool's port is a valid sandbox
 image. This one is the default.
 
 ## The contract
@@ -36,7 +37,66 @@ with it.
 - **`timeoutSeconds`** defaults to 60. `0` means run until it exits. A command
   killed by the timeout reports `exitCode: 124`, the `timeout(1)` convention.
 - **Output is capped** at 1 MiB per stream, past which `truncated` is `true`.
-  Beyond that, write to a file and read it back through `/files`.
+  Beyond that, write to a file and read it back through `/files`, or stream it.
+- **`"stream": true`** answers with `application/x-ndjson` instead, one event
+  per line as output arrives, then exactly one `exit` event. Nothing is capped.
+  A command that cannot start reports it as `stderr` and an `exit`, since the
+  `200` is already sent.
+
+```json
+{"type": "stdout", "data": "building...\n"}
+{"type": "stderr", "data": "warning: ...\n"}
+{"type": "exit", "exitCode": 0, "durationMillis": 1840}
+```
+
+Commands inherit the server's environment, so variables set on the sandbox's
+container reach every command and process.
+
+### `/processes`
+
+Background processes: dev servers, watchers, anything that outlives a request.
+They do not take the `/execute` seat, and run alongside each other.
+
+| Route | |
+| --- | --- |
+| `POST /processes` | Start one: `{"command", "pty", "cols", "rows"}`. `201` with the process. |
+| `GET /processes` | `{"processes": [...]}`, running and exited. |
+| `GET /processes/{id}` | One process. |
+| `GET /processes/{id}/output` | Its output from `?offset`, see below. |
+| `POST /processes/{id}/input` | The raw body is written to its stdin (or typed into its terminal). `204`; `409` once it has exited. |
+| `PUT /processes/{id}/size` | Resize its terminal: `{"cols", "rows"}`. `204`. |
+| `DELETE /processes/{id}` | Kill its process group if running, then forget it. `204`. |
+
+A process is `{"id", "command", "pty", "running", "exitCode", "startedAt",
+"endedAt", "cols", "rows"}`. One killed by a signal exits with 128 plus the
+signal number. A sandbox keeps 32 processes; exited ones are dropped oldest
+first to make room, and starting a 33rd running one is `409`.
+
+stdout and stderr are kept as one output, in the order written, and the last
+1 MiB of it is retained. `GET /output` addresses it by absolute byte offset:
+
+- By default it is a long-poll: `{"data", "offset", "nextOffset", "running",
+  "exitCode"}` with `data` base64-encoded, waiting up to `?wait` seconds (max
+  30) when there is nothing at `?offset` yet. Read again from `nextOffset`. An
+  offset older than the retained tail comes back with a later `offset` than
+  asked for, which is how a reader sees the gap.
+- `?follow=true` streams the raw bytes instead, from `?offset` (echoed as
+  `X-Output-Offset`) until the process exits or the client disconnects.
+
+### Terminals
+
+A terminal is a process started with `"pty": true`: it runs on a
+pseudo-terminal of `cols` by `rows` (default 80 by 24, at most 1000), as its
+own session, so job control, `^C` and resize work as they would over SSH.
+Without a `command` it is an interactive `$SANDBOX_SHELL`. Keystrokes go to
+`/input`, the screen comes back from `/output`, and `/size` delivers
+`SIGWINCH`. `TERM` defaults to `xterm-256color`. Terminals need Linux.
+
+```bash
+curl -X POST localhost:3000/processes -d '{"pty": true, "cols": 120, "rows": 40}'   # {"id": "1", ...}
+curl -X POST localhost:3000/processes/1/input --data-binary $'ls -la\n'
+curl "localhost:3000/processes/1/output?offset=0&wait=5"
+```
 
 ### `GET|PUT|DELETE /files/{path}`
 
@@ -72,7 +132,7 @@ subject.
 | --- | --- | --- |
 | `SANDBOX_WORKSPACE` | `/workspace` | working directory for exec, root for `/files` |
 | `SANDBOX_PORT` | `3000` | listen port |
-| `SANDBOX_SHELL` | `/bin/sh` | shell `/execute` runs commands through |
+| `SANDBOX_SHELL` | `/bin/sh` | shell commands, processes and terminals run through |
 
 ## Running it
 
