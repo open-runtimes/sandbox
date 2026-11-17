@@ -69,7 +69,8 @@ func (o *output) read(offset int64) chunk {
 	from := min(max(offset, o.start), end)
 
 	return chunk{
-		Data:    append([]byte(nil), o.buf[from-o.start:]...),
+		// Never nil: JSON encodes a nil slice as null, an empty one as "".
+		Data:    append([]byte{}, o.buf[from-o.start:]...),
 		From:    from,
 		Next:    end,
 		Closed:  o.closed,

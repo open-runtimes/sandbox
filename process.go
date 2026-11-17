@@ -325,7 +325,8 @@ func (s *server) readOutput(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "wait must be a non-negative integer")
 		return
 	}
-	deadline := time.NewTimer(min(time.Duration(waitSeconds)*time.Second, maxWait))
+	// Clamp in seconds: a huge wait would overflow the Duration first.
+	deadline := time.NewTimer(time.Duration(min(waitSeconds, int64(maxWait/time.Second))) * time.Second)
 	defer deadline.Stop()
 
 	c := p.out.read(offset)
@@ -449,8 +450,12 @@ func (s *server) killProcess(w http.ResponseWriter, r *http.Request) {
 	if p == nil {
 		return
 	}
+	// Signal the group even when the shell has exited: a child it put in the
+	// background is still in the group, and forgetting the process would
+	// leave that child running with no id to stop it by. An empty group is
+	// ESRCH, which is fine.
+	_ = syscall.Kill(-p.cmd.Process.Pid, syscall.SIGKILL)
 	if p.running() {
-		_ = syscall.Kill(-p.cmd.Process.Pid, syscall.SIGKILL)
 		select {
 		case <-p.done:
 		case <-time.After(5 * time.Second):

@@ -136,6 +136,53 @@ func TestProcesses(t *testing.T) {
 		}
 	})
 
+	t.Run("kills a background child after its shell has exited", func(t *testing.T) {
+		p := start(t, srv, `{"command": "sleep 30 >/dev/null 2>&1 & echo $!"}`)
+		all, out := readUntil(t, srv, p.ID, "\x00never")
+		if out.Running {
+			t.Fatalf("shell still running: %+v", out)
+		}
+		pid := strings.TrimSpace(all)
+
+		if res := request(t, srv, http.MethodDelete, "/processes/"+p.ID, ""); res.StatusCode != http.StatusNoContent {
+			t.Fatalf("DELETE status = %d, want 204", res.StatusCode)
+		}
+		// SIGKILL is delivered asynchronously; give the child a moment to go.
+		// A killed orphan can linger as a zombie until whoever adopted it
+		// reaps it, so only a live (non-zombie) process counts as surviving.
+		alive := `{"command": "awk '/^State:/ { exit $2 == \"Z\" }' /proc/` + pid + `/status 2>/dev/null"}`
+		for range 50 {
+			if _, check := post(t, srv, alive); check.ExitCode != 0 {
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Fatalf("background child %s survived DELETE", pid)
+	})
+
+	t.Run("an empty read has empty data, not null", func(t *testing.T) {
+		p := start(t, srv, `{"command": "sleep 30"}`)
+		t.Cleanup(func() { kill(t, srv, p.ID) })
+
+		res := request(t, srv, http.MethodGet, "/processes/"+p.ID+"/output", "")
+		body, err := io.ReadAll(res.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if !strings.Contains(string(body), `"data":""`) {
+			t.Fatalf("body = %s, want data as an empty string", body)
+		}
+	})
+
+	t.Run("a huge wait is capped, not overflowed", func(t *testing.T) {
+		p := start(t, srv, `{"command": "sleep 0.3; echo late"}`)
+		res := request(t, srv, http.MethodGet, "/processes/"+p.ID+"/output?wait=9223372036854775807", "")
+		out := decode[outputResponse](t, res)
+		if string(out.Data) != "late\n" {
+			t.Fatalf("data = %q, want the read to wait for output", out.Data)
+		}
+	})
+
 	t.Run("lists processes", func(t *testing.T) {
 		p := start(t, srv, `{"command": "true"}`)
 		list := decode[struct{ Processes []processInfo }](t, request(t, srv, http.MethodGet, "/processes", ""))
