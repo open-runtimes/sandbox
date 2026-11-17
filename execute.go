@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"os/exec"
 	"syscall"
@@ -26,6 +27,9 @@ const (
 type executeRequest struct {
 	Command        string `json:"command"`
 	TimeoutSeconds *int   `json:"timeoutSeconds"`
+	// Stream answers with NDJSON events as output arrives instead of one JSON
+	// body once the command exits. See streamEvent.
+	Stream bool `json:"stream"`
 }
 
 type executeResponse struct {
@@ -68,23 +72,36 @@ func (s *server) execute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, s.run(r.Context(), req.Command, timeout))
+	if req.Stream {
+		s.stream(r.Context(), w, req.Command, timeout)
+		return
+	}
+
+	var stdout, stderr capped
+	stdout.limit, stderr.limit = maxStream, maxStream
+
+	res := s.run(r.Context(), req.Command, timeout, &stdout, &stderr)
+	res.Stderr = stderr.buf.String() + res.Stderr
+	res.Stdout = stdout.buf.String()
+	res.Truncated = stdout.truncated || stderr.truncated
+
+	writeJSON(w, http.StatusOK, res)
 }
 
-func (s *server) run(ctx context.Context, command string, timeout time.Duration) executeResponse {
+// run executes command to completion, writing its output to stdout and stderr.
+// The result carries the exit code and duration; its Stderr holds only a
+// failure to start the command at all.
+func (s *server) run(ctx context.Context, command string, timeout time.Duration, stdout, stderr io.Writer) executeResponse {
 	if timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
 
-	var stdout, stderr capped
-	stdout.limit, stderr.limit = maxStream, maxStream
-
 	cmd := exec.CommandContext(ctx, s.shell, "-c", command)
 	cmd.Dir = s.workspace
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	// Own a process group so a timeout takes the whole tree with it, not just
 	// the shell, and give in-flight output a moment to drain after the kill.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -95,12 +112,7 @@ func (s *server) run(ctx context.Context, command string, timeout time.Duration)
 	err := cmd.Run()
 	elapsed := time.Since(started)
 
-	res := executeResponse{
-		Stdout:         stdout.buf.String(),
-		Stderr:         stderr.buf.String(),
-		DurationMillis: elapsed.Milliseconds(),
-		Truncated:      stdout.truncated || stderr.truncated,
-	}
+	res := executeResponse{DurationMillis: elapsed.Milliseconds()}
 
 	var exitErr *exec.ExitError
 	switch {
@@ -110,7 +122,7 @@ func (s *server) run(ctx context.Context, command string, timeout time.Duration)
 		res.ExitCode = exitErr.ExitCode()
 	case err != nil:
 		res.ExitCode = -1
-		res.Stderr += err.Error() + "\n"
+		res.Stderr = err.Error() + "\n"
 	}
 
 	return res

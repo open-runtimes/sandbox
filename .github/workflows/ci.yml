@@ -51,7 +51,7 @@ jobs:
           tags: sandbox:ci
 
       # The image is only useful if the contract answers from inside it, so
-      # exercise all three routes against the container we just built.
+      # exercise every route against the container we just built.
       - name: Smoke test the contract
         run: |
           docker run -d --name sandbox -p 3000:3000 sandbox:ci
@@ -67,6 +67,17 @@ jobs:
           curl -fsS -X POST localhost:3000/execute \
             -H 'Content-Type: application/json' \
             -d '{"command": "cat hello.txt"}' | grep -q '"exitCode":0'
+
+          curl -fsS -X POST localhost:3000/execute \
+            -H 'Content-Type: application/json' \
+            -d '{"command": "cat hello.txt", "stream": true}' | grep -q '"type":"exit","exitCode":0'
+
+          # A terminal needs a pty inside the container, not just on the runner.
+          id=$(curl -fsS -X POST localhost:3000/processes -d '{"pty": true}' | sed 's/.*"id":"\([^"]*\)".*/\1/')
+          curl -fsS -X POST "localhost:3000/processes/$id/input" --data-binary $'exit 5\n'
+          curl -fsS "localhost:3000/processes/$id/output?follow=true" >/dev/null
+          curl -fsS "localhost:3000/processes/$id" | grep -q '"exitCode":5'
+          curl -fsS -X DELETE "localhost:3000/processes/$id"
 
           curl -fsS -X DELETE localhost:3000/files/hello.txt
 

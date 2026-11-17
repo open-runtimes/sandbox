@@ -10,8 +10,9 @@ type server struct {
 	shell     string
 	// seat serializes /execute: one sandbox is one seat, and concurrent execs
 	// would race on a shared filesystem. A busy sandbox answers 409.
-	seat chan struct{}
-	mux  *http.ServeMux
+	seat      chan struct{}
+	processes processes
+	mux       *http.ServeMux
 }
 
 func newServer(workspace, shell string) *server {
@@ -23,6 +24,13 @@ func newServer(workspace, shell string) *server {
 	}
 
 	s.mux.HandleFunc("POST /execute", s.execute)
+	s.mux.HandleFunc("POST /processes", s.startProcess)
+	s.mux.HandleFunc("GET /processes", s.listProcesses)
+	s.mux.HandleFunc("GET /processes/{id}", s.getProcess)
+	s.mux.HandleFunc("GET /processes/{id}/output", s.readOutput)
+	s.mux.HandleFunc("POST /processes/{id}/input", s.writeInput)
+	s.mux.HandleFunc("PUT /processes/{id}/size", s.resize)
+	s.mux.HandleFunc("DELETE /processes/{id}", s.killProcess)
 	s.mux.HandleFunc("GET /files/{path...}", s.readFile)
 	s.mux.HandleFunc("PUT /files/{path...}", s.writeFile)
 	s.mux.HandleFunc("DELETE /files/{path...}", s.deleteFile)
